@@ -1,0 +1,24 @@
+# Build output
+out/
+
+# JavaFX / IDE local state
+.vscode/
+.idea/
+*.iml
+.classpath
+.project
+.settings/
+
+# OS junk
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# Local runtime state (should never be in git)
+*.db
+*.db-shm
+*.db-wal
+
+# Third-party JARs — check in policy is up to you
+# (comment the next line out if you WANT the SQLite JAR in the repo)
+# lib/
