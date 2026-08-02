@@ -21,24 +21,47 @@ import java.nio.file.Path;
 import java.util.function.Consumer;
 
 /**
- * A single 180×180 launcher tile: icon on top, name below.
+ * A single launcher tile, styled after an iOS home-screen app: a rounded
+ * "squircle" icon with the app name on its own line underneath.
  *
- * <p>Tile visuals are 100% CSS-driven — this class only wires the DOM. Hover
- * and focus states come from {@code styles.css}. Click and context-menu
- * handlers are passed in by the caller, keeping this class free of any
- * launch-service or dialog coupling.
+ * <p>The tile itself draws nothing — no card, no panel. Only the icon has a
+ * background, so the artwork <em>is</em> the tile. The supplied PNG is scaled
+ * to <em>cover</em> the squircle and centre-cropped, exactly like iOS: an image
+ * of any aspect ratio fills the shape edge to edge with no letterboxing, at the
+ * cost of trimming the long side.
  *
- * <p>When {@link AppEntry#iconPath()} is null or the file doesn't exist, we
- * render a deterministic colored square with the app's initial — the hue is
- * derived from a stable hash of the name so "Trackoff" always looks the same.
+ * <p>Structure is a three-level nest, and each level earns its place:
+ * <pre>
+ *   VBox        .tile        transparent; owns hover/focus/click
+ *    ├ StackPane .tile-icon  border + drop shadow (outside the clip)
+ *    │   └ StackPane         rounded clip; holds the image or letter
+ *    └ Label     .tile-name  caption underneath
+ * </pre>
+ * The frame and the clip can't be the same node: a clip would cut off the very
+ * border and shadow that make the icon read as a physical tile.
+ *
+ * <p>When {@link AppEntry#iconPath()} is null or missing we fill the squircle
+ * with a colour derived from a stable hash of the name and centre the app's
+ * initial — so "Trackoff" always looks the same.
  */
 public final class AppTile {
 
-    /** Grid tile width/height in pixels — matches design tokens. */
+    /** Grid cell width/height in pixels. */
     public static final double TILE_SIZE = 180.0;
 
-    /** Icon area size in pixels — leaves room for the name label below. */
-    private static final double ICON_SIZE = 96.0;
+    /** Icon squircle size — the label sits below it. */
+    private static final double ICON_SIZE = 112.0;
+
+    /**
+     * Corner radius as a fraction of icon size. 22.37% is the ratio Apple's
+     * icon grid uses; it reads as a squircle rather than a rounded square.
+     */
+    private static final double CORNER_RATIO = 0.2237;
+
+    private static final double CORNER_RADIUS = ICON_SIZE * CORNER_RATIO;
+
+    /** Cap on decoded image size — icons are never displayed above ICON_SIZE. */
+    private static final double LOAD_SIZE = ICON_SIZE * 3;
 
     private AppTile() { }
 
@@ -59,18 +82,16 @@ public final class AppTile {
 
         final Label nameLabel = new Label(app.name());
         nameLabel.getStyleClass().add("tile-name");
-        nameLabel.setMaxWidth(TILE_SIZE - 24);
+        nameLabel.setMaxWidth(TILE_SIZE - 12);
         nameLabel.setWrapText(false);
         nameLabel.setEllipsisString("…");
+        // maxWidth makes the Label node itself full-cell-width, and a Label's
+        // text is left-aligned within its box by default — without this the
+        // caption hangs off to the left of the icon it belongs to.
+        nameLabel.setAlignment(Pos.CENTER);
 
-        final VBox stack = new VBox(12, iconNode, nameLabel);
-        stack.setAlignment(Pos.CENTER);
-        stack.setPadding(new Insets(20));
-        stack.setPrefSize(TILE_SIZE, TILE_SIZE);
-        stack.setMinSize(TILE_SIZE, TILE_SIZE);
-        stack.setMaxSize(TILE_SIZE, TILE_SIZE);
+        final VBox stack = shell(iconNode, nameLabel);
         stack.getStyleClass().add("tile");
-        stack.setFocusTraversable(true);
 
         stack.setOnMouseClicked(e -> {
             if (e.getButton() == MouseButton.PRIMARY && onClick != null) {
@@ -88,55 +109,127 @@ public final class AppTile {
     }
 
     /**
-     * Builds the trailing "+" tile. Uses a {@link Label} rather than a
-     * {@link javafx.scene.text.Text} node so the "+" centers by content box
-     * instead of glyph baseline — {@code Text} anchors to the
-     * descender-inclusive baseline, which sinks the glyph below geometric
-     * center in a StackPane.
+     * Builds the trailing "+" tile. Uses the same icon-over-label shell as a
+     * real tile so its squircle lines up with the row of app icons instead of
+     * floating at a different height.
      */
     public static Node buildAddTile(final Runnable onClick) {
         final Label plus = new Label("+");
         plus.getStyleClass().add("add-tile-plus");
-        plus.setPrefSize(TILE_SIZE, TILE_SIZE);
         plus.setAlignment(Pos.CENTER);
 
-        final StackPane pane = new StackPane(plus);
-        pane.setPrefSize(TILE_SIZE, TILE_SIZE);
-        pane.setMinSize(TILE_SIZE, TILE_SIZE);
-        pane.setMaxSize(TILE_SIZE, TILE_SIZE);
-        pane.getStyleClass().addAll("tile", "add-tile");
-        pane.setFocusTraversable(true);
+        final StackPane frame = iconFrame();
+        frame.getStyleClass().add("add-tile");
+        frame.getChildren().add(plus);
 
-        pane.setOnMouseClicked(e -> {
+        final Label nameLabel = new Label("Add");
+        nameLabel.getStyleClass().addAll("tile-name", "add-tile-name");
+
+        final VBox stack = shell(frame, nameLabel);
+        stack.getStyleClass().addAll("tile", "add-tile-shell");
+
+        stack.setOnMouseClicked(e -> {
             if (e.getButton() == MouseButton.PRIMARY && onClick != null) {
                 onClick.run();
             }
         });
 
-        return pane;
+        return stack;
+    }
+
+    // ---- shared layout -----------------------------------------------------
+
+    /** Icon above, caption below, pinned to the grid cell size. */
+    private static VBox shell(final Node icon, final Label caption) {
+        final VBox stack = new VBox(10, icon, caption);
+        stack.setAlignment(Pos.TOP_CENTER);
+        // Top padding centres the icon+label pair within the cell; the gap
+        // below is what separates rows of captions from the next row's icons.
+        stack.setPadding(new Insets(14, 4, 4, 4));
+        stack.setPrefSize(TILE_SIZE, TILE_SIZE);
+        stack.setMinSize(TILE_SIZE, TILE_SIZE);
+        stack.setMaxSize(TILE_SIZE, TILE_SIZE);
+        stack.setFocusTraversable(true);
+        return stack;
+    }
+
+    /**
+     * The bordered, shadowed squircle frame. Radius is set inline rather than in
+     * CSS so it can never drift out of sync with {@link #CORNER_RADIUS}, which
+     * also drives the clip geometry.
+     */
+    private static StackPane iconFrame() {
+        final StackPane frame = new StackPane();
+        frame.getStyleClass().add("tile-icon");
+        frame.setMinSize(ICON_SIZE, ICON_SIZE);
+        frame.setPrefSize(ICON_SIZE, ICON_SIZE);
+        frame.setMaxSize(ICON_SIZE, ICON_SIZE);
+        frame.setStyle("-fx-background-radius: " + CORNER_RADIUS + "px;"
+                     + "-fx-border-radius: "     + CORNER_RADIUS + "px;");
+        return frame;
     }
 
     // ---- icon rendering ----------------------------------------------------
 
     private static Node buildIcon(final AppEntry app) {
-        final Path iconPath = resolveIconPath(app);
-        if (iconPath != null) {
-            try {
-                final Image img = new Image(iconPath.toUri().toString(),
-                        ICON_SIZE, ICON_SIZE, true, true);
-                if (!img.isError()) {
-                    final ImageView iv = new ImageView(img);
-                    iv.setFitWidth(ICON_SIZE);
-                    iv.setFitHeight(ICON_SIZE);
-                    iv.setPreserveRatio(true);
-                    iv.setSmooth(true);
-                    return iv;
-                }
-            } catch (Exception ignored) {
-                // fall through to letter fallback
-            }
+        final StackPane clipped = new StackPane();
+        clipped.setMinSize(ICON_SIZE, ICON_SIZE);
+        clipped.setPrefSize(ICON_SIZE, ICON_SIZE);
+        clipped.setMaxSize(ICON_SIZE, ICON_SIZE);
+        clipped.setClip(squircleClip());
+
+        final Image img = loadIcon(app);
+        if (img != null) {
+            clipped.getChildren().add(coverView(img));
+        } else {
+            clipped.setStyle("-fx-background-color: " + toWebColor(colorForName(app.name())) + ";");
+            clipped.getChildren().add(letterLabel(app.name()));
         }
-        return buildLetterFallback(app.name());
+
+        final StackPane frame = iconFrame();
+        frame.getChildren().add(clipped);
+        return frame;
+    }
+
+    private static Image loadIcon(final AppEntry app) {
+        final Path iconPath = resolveIconPath(app);
+        if (iconPath == null) return null;
+        try {
+            final Image img = new Image(iconPath.toUri().toString(),
+                    LOAD_SIZE, LOAD_SIZE, true, true);
+            return (img.isError() || img.getWidth() <= 0) ? null : img;
+        } catch (Exception ignored) {
+            return null;   // fall through to the letter fallback
+        }
+    }
+
+    /**
+     * Scales an image to cover the squircle, overflowing on the long axis so
+     * the crop happens at the clip.
+     *
+     * <p>Only one fit dimension is set: with {@code preserveRatio}, JavaFX
+     * derives the other from the aspect ratio. Constraining the <em>short</em>
+     * side to the icon size is what guarantees full coverage — constraining the
+     * long side (or setting both) would letterbox instead.
+     */
+    private static ImageView coverView(final Image img) {
+        final ImageView iv = new ImageView(img);
+        iv.setPreserveRatio(true);
+        iv.setSmooth(true);
+        if (img.getWidth() >= img.getHeight()) {
+            iv.setFitHeight(ICON_SIZE);   // landscape: height fits, width spills
+        } else {
+            iv.setFitWidth(ICON_SIZE);    // portrait: width fits, height spills
+        }
+        return iv;
+    }
+
+    private static Rectangle squircleClip() {
+        final Rectangle r = new Rectangle(ICON_SIZE, ICON_SIZE);
+        // arc* is the full diameter of the corner, hence 2x the radius.
+        r.setArcWidth(CORNER_RADIUS * 2);
+        r.setArcHeight(CORNER_RADIUS * 2);
+        return r;
     }
 
     private static Path resolveIconPath(final AppEntry app) {
@@ -148,26 +241,15 @@ public final class AppTile {
         return Files.exists(candidate) ? candidate : null;
     }
 
-    private static Node buildLetterFallback(final String name) {
+    private static Label letterLabel(final String name) {
         final String initial = (name == null || name.isEmpty())
                 ? "?"
                 : name.substring(0, 1).toUpperCase();
-
-        final Rectangle bg = new Rectangle(ICON_SIZE, ICON_SIZE);
-        bg.setArcWidth(20);
-        bg.setArcHeight(20);
-        bg.setFill(colorForName(name));
-
         final Label letter = new Label(initial);
         letter.getStyleClass().add("tile-letter");
         letter.setPrefSize(ICON_SIZE, ICON_SIZE);
         letter.setAlignment(Pos.CENTER);
-
-        final StackPane pane = new StackPane(bg, letter);
-        pane.setPrefSize(ICON_SIZE, ICON_SIZE);
-        pane.setMinSize(ICON_SIZE, ICON_SIZE);
-        pane.setMaxSize(ICON_SIZE, ICON_SIZE);
-        return pane;
+        return letter;
     }
 
     private static Color colorForName(final String name) {
@@ -179,5 +261,13 @@ public final class AppTile {
         final double sat = 0.45;
         final double bri = 0.75;
         return Color.hsb(hue, sat, bri);
+    }
+
+    /** {@code #rrggbb} for use in an inline {@code -fx-background-color}. */
+    private static String toWebColor(final Color c) {
+        return String.format("#%02X%02X%02X",
+                (int) Math.round(c.getRed()   * 255),
+                (int) Math.round(c.getGreen() * 255),
+                (int) Math.round(c.getBlue()  * 255));
     }
 }

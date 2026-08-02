@@ -6,6 +6,7 @@ import com.deck.db.IconStore;
 import com.deck.model.AppEntry;
 import com.deck.model.LaunchType;
 
+import javafx.embed.swing.SwingFXUtils;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
@@ -45,10 +46,13 @@ import java.util.function.Consumer;
  *       {@code sort_order}).</li>
  * </ul>
  *
- * <p>Icon handling: the user's chosen PNG is <em>not</em> copied until Save,
- * at which point {@link IconStore#copyIntoStore(Path)} generates a UUID
- * filename under {@code .deck\icons\}. If editing and a new icon replaces an
- * old one, the old one is deleted after the DB write succeeds.
+ * <p>Icon handling: choosing a PNG or JPEG opens {@link IconCropDialog} for a
+ * square crop. The cropped image is held in memory and <em>not</em> written
+ * until Save, at which point {@link IconStore#savePng(java.awt.image.BufferedImage)}
+ * encodes it under a UUID filename in {@code .deck\icons\}. Everything is
+ * normalised to PNG on disk regardless of the source format. If editing and a
+ * new icon replaces an old one, the old one is deleted after the DB write
+ * succeeds.
  *
  * <p>The URL type disables the target Browse button, args, and working-dir
  * inputs — they aren't meaningful for browser launches. Users can still type
@@ -78,14 +82,18 @@ public final class AppEditorDialog {
     private final Label     compositeDelayLabel   = formLabel("Wait (ms)");
     private final Label     compositeUrlLabel     = formLabel("Then open");
 
-    private final Button    chooseIconButton = new Button("Choose PNG…");
+    private final Button    chooseIconButton = new Button("Choose image…");
     private final Button    clearIconButton  = new Button("×");
     private final ImageView iconPreview      = new ImageView();
     private final Label     iconStatus       = new Label("No icon");
     private final Label     errorLabel       = new Label();
 
-    /** Non-null iff the user just picked a new icon in this dialog session. */
-    private Path pendingIconSource;
+    /**
+     * Non-null iff the user picked and cropped a new icon in this dialog
+     * session. Held as a decoded image rather than a source path because the
+     * crop has no file behind it — it's written out on save.
+     */
+    private Image pendingIconImage;
 
     /** True if the user explicitly cleared the icon during this session. */
     private boolean iconCleared;
@@ -313,14 +321,15 @@ public final class AppEditorDialog {
         final boolean isUrl       = type == LaunchType.URL;
         final boolean isComposite = type == LaunchType.COMPOSITE;
 
-        // Composite drives everything from its own three fields, so the plain
-        // target row is meaningless there — hide it rather than leave a box the
-        // user might think matters.
         setRowVisible(isComposite,
                 compositeStartupLabel, compositeStartupField,
                 compositeDelayLabel,   compositeDelayField,
                 compositeUrlLabel,     compositeUrlField);
-        targetField.setDisable(isUrl || isComposite);
+
+        // Only COMPOSITE disables the target field — it drives everything from
+        // its own three fields. URL very much needs it: that's where the URL is
+        // typed. Browse is the part that's meaningless for a URL, not the field.
+        targetField.setDisable(isComposite);
         targetBrowse.setDisable(isUrl || isComposite);
 
         argsField.setDisable(isUrl || isComposite);
@@ -374,25 +383,39 @@ public final class AppEditorDialog {
 
     private void pickIcon() {
         final FileChooser fc = new FileChooser();
-        fc.setTitle("Choose icon PNG");
-        fc.getExtensionFilters().add(
-                new FileChooser.ExtensionFilter("PNG images", "*.png"));
+        fc.setTitle("Choose icon image");
+        fc.getExtensionFilters().addAll(
+                new FileChooser.ExtensionFilter("Images", "*.png", "*.jpg", "*.jpeg"),
+                new FileChooser.ExtensionFilter("PNG images", "*.png"),
+                new FileChooser.ExtensionFilter("JPEG images", "*.jpg", "*.jpeg"));
         final File chosen = fc.showOpenDialog(stage);
         if (chosen == null) return;
-        pendingIconSource = chosen.toPath();
-        iconCleared = false;
+
+        // Load at full resolution so the crop keeps the original detail.
+        final Image full;
         try {
-            iconPreview.setImage(new Image(pendingIconSource.toUri().toString(),
-                    48, 48, true, true));
+            full = new Image(chosen.toURI().toString());
+            if (full.isError() || full.getWidth() <= 0) {
+                iconStatus.setText("Couldn't read that image");
+                return;
+            }
+        } catch (Exception ex) {
+            iconStatus.setText("Couldn't read that image");
+            return;
+        }
+
+        // Cancelling the cropper leaves any previously chosen icon untouched.
+        IconCropDialog.open(stage, full).ifPresent(cropped -> {
+            pendingIconImage = cropped;
+            iconCleared = false;
+            iconPreview.setImage(cropped);
             iconStatus.setText(chosen.getName());
             showClearButton(true);
-        } catch (Exception ex) {
-            iconStatus.setText("Preview failed");
-        }
+        });
     }
 
     private void clearIcon() {
-        pendingIconSource = null;
+        pendingIconImage = null;
         iconCleared = true;
         iconPreview.setImage(null);
         iconStatus.setText("No icon");
@@ -455,8 +478,9 @@ public final class AppEditorDialog {
         }
 
         try {
-            if (pendingIconSource != null) {
-                final String newFilename = IconStore.copyIntoStore(pendingIconSource);
+            if (pendingIconImage != null) {
+                final String newFilename = IconStore.savePng(
+                        SwingFXUtils.fromFXImage(pendingIconImage, null));
                 if (existingIconFilename != null && !existingIconFilename.isBlank()) {
                     IconStore.deleteFromStore(existingIconFilename);
                 }
