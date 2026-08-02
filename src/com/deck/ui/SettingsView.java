@@ -2,6 +2,8 @@ package com.deck.ui;
 
 import com.deck.config.AppPaths;
 import com.deck.config.Settings;
+import com.deck.config.WindowsAutostart;
+import com.deck.config.WindowsShortcuts;
 import com.deck.db.Dao;
 import com.deck.db.IconStore;
 import com.deck.model.AppEntry;
@@ -24,6 +26,7 @@ import javafx.stage.Stage;
 import javafx.stage.Window;
 
 import java.awt.Desktop;
+import java.io.IOException;
 import java.sql.SQLException;
 import java.util.List;
 import java.util.Optional;
@@ -31,12 +34,17 @@ import java.util.Optional;
 /**
  * Settings modal — reachable from the gear icon in {@link LauncherView}.
  *
- * <p>Phase 1 exposes three actionable settings and a couple of read-only bits:
+ * <p>Exposes these actionable settings and a couple of read-only bits:
  * <ul>
- *   <li><b>Startup</b> — toggle "Launch Deck on Windows startup." The toggle
- *       persists to {@code settings.startup.autostart}. Actual wiring
- *       (a {@code shell:startup} shortcut or {@code HKCU\...\Run} registry
- *       key) is Phase 2 — this drop just captures user intent.</li>
+ *   <li><b>Desktop</b> — toggle a double-clickable {@code Deck.lnk} on the
+ *       Desktop, created by {@link WindowsShortcuts}. Like the startup toggle,
+ *       the checkbox reflects the file on disk.</li>
+ *   <li><b>Startup</b> — toggle "Launch Deck on Windows startup." Creates or
+ *       deletes a real shortcut in the Windows Startup folder via
+ *       {@link WindowsAutostart}, and mirrors the state into
+ *       {@code settings.startup.autostart}. The checkbox reads its initial
+ *       value from the shortcut on disk, not from the settings row, so
+ *       removing it via Task Manager is reflected here.</li>
  *   <li><b>Data folder</b> — displays {@code %USERPROFILE%\.deck\} with an
  *       "Open in Explorer" button.</li>
  *   <li><b>Reset</b> — nukes every tile and its icon file. Source apps on disk
@@ -102,6 +110,7 @@ public final class SettingsView {
 
     private void buildScene() {
         final VBox root = new VBox(28,
+                buildDesktopSection(),
                 buildStartupSection(),
                 buildDataSection(),
                 buildResetSection(),
@@ -123,21 +132,78 @@ public final class SettingsView {
 
         final CheckBox autostart = new CheckBox("Launch Deck on Windows startup");
         autostart.getStyleClass().add("form-check");
-        autostart.setSelected(readBool(KEY_AUTOSTART, false));
+
+        // Disk is the source of truth, not the settings row — the user may have
+        // deleted the shortcut via Task Manager's Startup tab since last time.
+        autostart.setSelected(WindowsAutostart.isEnabled());
+
+        final Label hint = hint(shortcutHint());
+
+        // Guard so the corrective setSelected() in the failure path doesn't
+        // re-enter this listener and undo itself.
+        final boolean[] applying = {false};
         autostart.selectedProperty().addListener((obs, old, val) -> {
+            if (applying[0]) return;
             try {
+                WindowsAutostart.setEnabled(val);
                 Settings.setBool(KEY_AUTOSTART, val);
-            } catch (SQLException ex) {
+                hint.setText(shortcutHint());
+            } catch (IOException | SQLException ex) {
+                applying[0] = true;
                 autostart.setSelected(old);
-                showBlockingError("Failed to save setting: " + ex.getMessage());
+                applying[0] = false;
+                hint.setText(shortcutHint());
+                showBlockingError("Couldn't " + (val ? "enable" : "disable")
+                        + " startup: " + ex.getMessage());
             }
         });
 
-        final Label hint = hint(
-                "Actual startup wiring lands in Phase 2 — this toggle "
-              + "just remembers your preference for now.");
-
         return section(heading, autostart, hint);
+    }
+
+    private static String shortcutHint() {
+        return WindowsAutostart.isEnabled()
+                ? "Shortcut installed at " + WindowsAutostart.shortcutPath()
+                  + "\nYou can also disable it from Task Manager → Startup."
+                : "Creates a shortcut in your Windows Startup folder that starts "
+                  + "Deck minimised when you log in.";
+    }
+
+    // ---- desktop shortcut section ------------------------------------------
+
+    private VBox buildDesktopSection() {
+        final Label heading = sectionHeading("DESKTOP");
+
+        final CheckBox desktop = new CheckBox("Put a Deck shortcut on the Desktop");
+        desktop.getStyleClass().add("form-check");
+        desktop.setSelected(WindowsShortcuts.isDesktopShortcutInstalled());
+
+        final Label hint = hint(desktopHint());
+
+        final boolean[] applying = {false};
+        desktop.selectedProperty().addListener((obs, old, val) -> {
+            if (applying[0]) return;
+            try {
+                WindowsShortcuts.setDesktopShortcut(val);
+                hint.setText(desktopHint());
+            } catch (IOException ex) {
+                applying[0] = true;
+                desktop.setSelected(old);
+                applying[0] = false;
+                hint.setText(desktopHint());
+                showBlockingError("Couldn't " + (val ? "create" : "remove")
+                        + " the Desktop shortcut: " + ex.getMessage());
+            }
+        });
+
+        return section(heading, desktop, hint);
+    }
+
+    private static String desktopHint() {
+        return WindowsShortcuts.isDesktopShortcutInstalled()
+                ? "Double-click Deck on your Desktop to launch it — no console window."
+                : "Adds a normal double-clickable app icon at "
+                  + WindowsShortcuts.desktopShortcutPath() + ".";
     }
 
     // ---- data section ------------------------------------------------------
@@ -219,14 +285,6 @@ public final class SettingsView {
         l.setWrapText(true);
         l.setMaxWidth(456);
         return l;
-    }
-
-    private static boolean readBool(final String key, final boolean fallback) {
-        try {
-            return Settings.getBool(key, fallback);
-        } catch (SQLException e) {
-            return fallback;
-        }
     }
 
     // ---- actions -----------------------------------------------------------

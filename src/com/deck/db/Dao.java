@@ -29,7 +29,8 @@ public final class Dao {
     public static List<AppEntry> loadApps() throws SQLException {
         final String sql = """
                 SELECT id, name, launch_type, launch_target, launch_args,
-                       working_dir, icon_path, sort_order
+                       working_dir, icon_path, sort_order,
+                       composite_startup, composite_delay_ms, composite_url
                 FROM apps
                 ORDER BY sort_order ASC, id ASC
                 """;
@@ -48,8 +49,9 @@ public final class Dao {
         final String sql = """
                 INSERT INTO apps
                     (name, launch_type, launch_target, launch_args,
-                     working_dir, icon_path, sort_order, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     working_dir, icon_path, sort_order, created_at, updated_at,
+                     composite_startup, composite_delay_ms, composite_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """;
         final long now = System.currentTimeMillis();
         try (PreparedStatement ps = Database.connection().prepareStatement(
@@ -63,6 +65,9 @@ public final class Dao {
             ps.setInt(7, app.sortOrder());
             ps.setLong(8, now);
             ps.setLong(9, now);
+            ps.setString(10, app.compositeStartup());
+            ps.setInt(11, app.compositeDelayMs());
+            ps.setString(12, app.compositeUrl());
             ps.executeUpdate();
             try (ResultSet keys = ps.getGeneratedKeys()) {
                 return keys.next() ? keys.getLong(1) : -1L;
@@ -76,7 +81,9 @@ public final class Dao {
                 UPDATE apps SET
                     name = ?, launch_type = ?, launch_target = ?,
                     launch_args = ?, working_dir = ?, icon_path = ?,
-                    sort_order = ?, updated_at = ?
+                    sort_order = ?, updated_at = ?,
+                    composite_startup = ?, composite_delay_ms = ?,
+                    composite_url = ?
                 WHERE id = ?
                 """;
         try (PreparedStatement ps = Database.connection().prepareStatement(sql)) {
@@ -88,7 +95,10 @@ public final class Dao {
             ps.setString(6, app.iconPath());
             ps.setInt(7, app.sortOrder());
             ps.setLong(8, System.currentTimeMillis());
-            ps.setLong(9, app.id());
+            ps.setString(9, app.compositeStartup());
+            ps.setInt(10, app.compositeDelayMs());
+            ps.setString(11, app.compositeUrl());
+            ps.setLong(12, app.id());
             ps.executeUpdate();
         }
     }
@@ -157,6 +167,10 @@ public final class Dao {
                 rs.getString("launch_args"),
                 rs.getString("working_dir"),
                 rs.getString("icon_path"),
-                rs.getInt("sort_order"));
+                rs.getInt("sort_order"),
+                rs.getString("composite_startup"),
+                // getInt maps SQL NULL to 0, which is exactly "no delay".
+                rs.getInt("composite_delay_ms"),
+                rs.getString("composite_url"));
     }
 }

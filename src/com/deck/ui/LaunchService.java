@@ -24,6 +24,8 @@ import java.util.function.Consumer;
  *   <li>{@code SCRIPT} — {@code .ps1} runs under PowerShell with
  *       {@code -ExecutionPolicy Bypass}; {@code .bat}/{@code .cmd} runs via
  *       {@code cmd /c}</li>
+ *   <li>{@code COMPOSITE} — startup command via {@code cmd /c}, then a fixed
+ *       delay, then {@link Desktop#browse(URI)} on the configured URL</li>
  * </ul>
  *
  * <p>All launches run on a daemon background thread so the FX thread never
@@ -60,10 +62,11 @@ public final class LaunchService {
     private static LaunchResult launchSync(final AppEntry app) {
         try {
             switch (app.launchType()) {
-                case URL    -> launchUrl(app);
-                case EXE    -> launchExe(app);
-                case JAR    -> launchJar(app);
-                case SCRIPT -> launchScript(app);
+                case URL       -> launchUrl(app);
+                case EXE       -> launchExe(app);
+                case JAR       -> launchJar(app);
+                case SCRIPT    -> launchScript(app);
+                case COMPOSITE -> launchComposite(app);
             }
             return LaunchResult.ok("Launched " + app.name());
         } catch (Exception e) {
@@ -74,11 +77,53 @@ public final class LaunchService {
     // ---- per-type handlers -------------------------------------------------
 
     private static void launchUrl(final AppEntry app) throws IOException {
+        browse(app.launchTarget());
+    }
+
+    /**
+     * Composite: fire the startup command, wait, then open the URL.
+     *
+     * <p>Already running on the daemon launch thread, so sleeping here blocks
+     * nothing the user can see. The startup command goes through {@code cmd /c}
+     * rather than our whitespace arg splitter so Windows parses the command
+     * line itself — quoted paths with spaces survive.
+     *
+     * <p>The startup process is fire-and-forget: Deck doesn't check whether it
+     * actually came up, it just waits the configured delay and browses. A dead
+     * server surfaces as a browser error, not a Deck error.
+     */
+    private static void launchComposite(final AppEntry app) throws IOException {
+        final String url = app.compositeUrl();
+        if (url == null || url.isBlank()) {
+            throw new IOException("No URL configured for this composite tile");
+        }
+
+        final String startup = app.compositeStartup();
+        if (startup != null && !startup.isBlank()) {
+            spawn(List.of("cmd", "/c", startup), app.workingDir());
+        }
+
+        final int delayMs = app.compositeDelayMs();
+        if (delayMs > 0) {
+            try {
+                Thread.sleep(delayMs);
+            } catch (InterruptedException e) {
+                // Preserve the flag for anything up the stack, then bail out
+                // rather than opening a browser against a half-started server.
+                Thread.currentThread().interrupt();
+                throw new IOException("Launch interrupted while waiting for startup");
+            }
+        }
+
+        browse(url);
+    }
+
+    private static void browse(final String url) throws IOException {
         if (!Desktop.isDesktopSupported()
                 || !Desktop.getDesktop().isSupported(Desktop.Action.BROWSE)) {
             throw new IOException("Desktop browsing not supported on this OS");
         }
-        Desktop.getDesktop().browse(URI.create(app.launchTarget()));
+        Desktop.getDesktop().browse(URI.create(url));
     }
 
     private static void launchExe(final AppEntry app) throws IOException {

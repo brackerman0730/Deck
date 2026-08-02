@@ -69,6 +69,15 @@ public final class AppEditorDialog {
     private final TextField argsField        = new TextField();
     private final TextField workingDirField  = new TextField();
     private final Button    workingDirBrowse = new Button("Browse…");
+    // COMPOSITE-only inputs. Hidden (and un-managed, so they take no space)
+    // for every other launch type — see applyTypeState.
+    private final TextField compositeStartupField = new TextField();
+    private final TextField compositeDelayField   = new TextField();
+    private final TextField compositeUrlField     = new TextField();
+    private final Label     compositeStartupLabel = formLabel("Startup cmd");
+    private final Label     compositeDelayLabel   = formLabel("Wait (ms)");
+    private final Label     compositeUrlLabel     = formLabel("Then open");
+
     private final Button    chooseIconButton = new Button("Choose PNG…");
     private final Button    clearIconButton  = new Button("×");
     private final ImageView iconPreview      = new ImageView();
@@ -137,6 +146,13 @@ public final class AppEditorDialog {
         typeBox.getItems().addAll(LaunchType.values());
         typeBox.getStyleClass().add("form-choice");
 
+        compositeStartupField.setPromptText("e.g. node server.js");
+        compositeStartupField.getStyleClass().add("form-field");
+        compositeDelayField.setPromptText("e.g. 4000");
+        compositeDelayField.getStyleClass().add("form-field");
+        compositeUrlField.setPromptText("http://localhost:3000");
+        compositeUrlField.getStyleClass().add("form-field");
+
         chooseIconButton.getStyleClass().add("button-secondary");
         clearIconButton.getStyleClass().add("button-secondary");
         clearIconButton.setVisible(false);
@@ -172,16 +188,27 @@ public final class AppEditorDialog {
         form.add(formLabel("Target"),      0, 2);
         form.add(hstack(targetField, targetBrowse, true), 1, 2);
 
-        form.add(formLabel("Args"),        0, 3);
-        form.add(argsField,                1, 3);
+        // Composite rows sit directly under Target so the three steps read in
+        // execution order. They collapse to zero height when un-managed.
+        form.add(compositeStartupLabel,    0, 3);
+        form.add(compositeStartupField,    1, 3);
 
-        form.add(formLabel("Working dir"), 0, 4);
-        form.add(hstack(workingDirField, workingDirBrowse, true), 1, 4);
+        form.add(compositeDelayLabel,      0, 4);
+        form.add(compositeDelayField,      1, 4);
 
-        form.add(formLabel("Icon"),        0, 5);
+        form.add(compositeUrlLabel,        0, 5);
+        form.add(compositeUrlField,        1, 5);
+
+        form.add(formLabel("Args"),        0, 6);
+        form.add(argsField,                1, 6);
+
+        form.add(formLabel("Working dir"), 0, 7);
+        form.add(hstack(workingDirField, workingDirBrowse, true), 1, 7);
+
+        form.add(formLabel("Icon"),        0, 8);
         final HBox iconRow = new HBox(12, chooseIconButton, clearIconButton, iconBox, iconStatus);
         iconRow.setAlignment(Pos.CENTER_LEFT);
-        form.add(iconRow, 1, 5);
+        form.add(iconRow, 1, 8);
 
         final ColumnConstraints c1 = new ColumnConstraints();
         c1.setMinWidth(110);
@@ -218,7 +245,7 @@ public final class AppEditorDialog {
         stage.setScene(scene);
     }
 
-    private Label formLabel(final String text) {
+    private static Label formLabel(final String text) {
         final Label l = new Label(text);
         l.getStyleClass().add("form-label");
         return l;
@@ -244,6 +271,10 @@ public final class AppEditorDialog {
         targetField.setText(nullSafe(existing.launchTarget()));
         argsField.setText(nullSafe(existing.launchArgs()));
         workingDirField.setText(nullSafe(existing.workingDir()));
+        compositeStartupField.setText(nullSafe(existing.compositeStartup()));
+        compositeDelayField.setText(
+                existing.compositeDelayMs() > 0 ? Integer.toString(existing.compositeDelayMs()) : "");
+        compositeUrlField.setText(nullSafe(existing.compositeUrl()));
         applyTypeState(existing.launchType());
         loadExistingIconPreview(existing.iconPath());
     }
@@ -279,12 +310,37 @@ public final class AppEditorDialog {
     }
 
     private void applyTypeState(final LaunchType type) {
-        final boolean isUrl = type == LaunchType.URL;
-        targetBrowse.setDisable(isUrl);
-        argsField.setDisable(isUrl);
+        final boolean isUrl       = type == LaunchType.URL;
+        final boolean isComposite = type == LaunchType.COMPOSITE;
+
+        // Composite drives everything from its own three fields, so the plain
+        // target row is meaningless there — hide it rather than leave a box the
+        // user might think matters.
+        setRowVisible(isComposite,
+                compositeStartupLabel, compositeStartupField,
+                compositeDelayLabel,   compositeDelayField,
+                compositeUrlLabel,     compositeUrlField);
+        targetField.setDisable(isUrl || isComposite);
+        targetBrowse.setDisable(isUrl || isComposite);
+
+        argsField.setDisable(isUrl || isComposite);
+        // Working dir still matters for composite — it's where the startup
+        // command runs (e.g. the folder holding server.js).
         workingDirField.setDisable(isUrl);
         workingDirBrowse.setDisable(isUrl);
-        targetField.setPromptText(isUrl ? "https://example.com" : "path to file");
+
+        if (isComposite) {
+            targetField.setPromptText("(not used — set 'Then open' below)");
+        } else {
+            targetField.setPromptText(isUrl ? "https://example.com" : "path to file");
+        }
+    }
+
+    private static void setRowVisible(final boolean visible, final javafx.scene.Node... nodes) {
+        for (javafx.scene.Node n : nodes) {
+            n.setVisible(visible);
+            n.setManaged(visible);
+        }
     }
 
     private void pickTargetFile() {
@@ -354,15 +410,41 @@ public final class AppEditorDialog {
         errorLabel.setText("");
         final String name       = nameField.getText() == null ? "" : nameField.getText().trim();
         final LaunchType type   = typeBox.getValue();
-        final String target     = targetField.getText() == null ? "" : targetField.getText().trim();
+        String       target     = targetField.getText() == null ? "" : targetField.getText().trim();
         final String args       = argsField.getText() == null ? "" : argsField.getText().trim();
         final String workingDir = workingDirField.getText() == null ? "" : workingDirField.getText().trim();
+
+        final String cStartup = trimmed(compositeStartupField);
+        final String cUrl     = trimmed(compositeUrlField);
+        final String cDelayIn = trimmed(compositeDelayField);
+        int cDelay = 0;
 
         if (name.isEmpty()) {
             errorLabel.setText("Name is required");
             return;
         }
-        if (target.isEmpty()) {
+
+        if (type == LaunchType.COMPOSITE) {
+            if (cUrl.isEmpty()) {
+                errorLabel.setText("'Then open' URL is required for composite tiles");
+                return;
+            }
+            if (!cDelayIn.isEmpty()) {
+                try {
+                    cDelay = Integer.parseInt(cDelayIn);
+                } catch (NumberFormatException ex) {
+                    errorLabel.setText("Wait must be a whole number of milliseconds");
+                    return;
+                }
+                if (cDelay < 0) {
+                    errorLabel.setText("Wait cannot be negative");
+                    return;
+                }
+            }
+            // launch_target is NOT NULL in the schema and composite doesn't use
+            // it, so mirror the URL in to keep the row valid and readable.
+            target = cUrl;
+        } else if (target.isEmpty()) {
             errorLabel.setText("Target is required");
             return;
         }
@@ -383,10 +465,14 @@ public final class AppEditorDialog {
                 IconStore.deleteFromStore(existingIconFilename);
             }
 
+            final boolean composite = type == LaunchType.COMPOSITE;
             final AppEntry saved = persist(name, type, target,
                     args.isEmpty() ? null : args,
                     workingDir.isEmpty() ? null : workingDir,
-                    finalIconFilename);
+                    finalIconFilename,
+                    composite && !cStartup.isEmpty() ? cStartup : null,
+                    composite ? cDelay : 0,
+                    composite ? cUrl : null);
 
             if (onSaved != null) onSaved.accept(saved);
             stage.close();
@@ -397,18 +483,27 @@ public final class AppEditorDialog {
 
     private AppEntry persist(final String name, final LaunchType type, final String target,
                              final String args, final String workingDir,
-                             final String iconFilename) throws Exception {
+                             final String iconFilename, final String compositeStartup,
+                             final int compositeDelayMs, final String compositeUrl)
+            throws Exception {
         if (editingId != null) {
             final AppEntry entry = new AppEntry(
                     editingId, name, type, target, args, workingDir,
-                    iconFilename, existingSortOrder);
+                    iconFilename, existingSortOrder,
+                    compositeStartup, compositeDelayMs, compositeUrl);
             Dao.updateApp(entry);
             return entry;
         }
         final int order = Dao.nextSortOrder();
         final AppEntry draft = new AppEntry(
-                -1L, name, type, target, args, workingDir, iconFilename, order);
+                -1L, name, type, target, args, workingDir, iconFilename, order,
+                compositeStartup, compositeDelayMs, compositeUrl);
         final long id = Dao.insertApp(draft);
-        return new AppEntry(id, name, type, target, args, workingDir, iconFilename, order);
+        return new AppEntry(id, name, type, target, args, workingDir, iconFilename, order,
+                compositeStartup, compositeDelayMs, compositeUrl);
+    }
+
+    private static String trimmed(final TextField f) {
+        return f.getText() == null ? "" : f.getText().trim();
     }
 }

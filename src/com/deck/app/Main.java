@@ -6,6 +6,7 @@ import com.deck.config.Settings;
 import com.deck.ui.LauncherView;
 import com.deck.ui.SettingsView;
 import com.deck.db.SeedData;
+import com.deck.db.BuiltInApps;
 
 
 import javafx.application.Application;
@@ -31,6 +32,9 @@ public final class Main extends Application {
         Database.init();
         // -- first-run sample tiles (Drop 2) ---------------------------------
         SeedData.seedIfEmpty();
+        // -- tiles for the sibling projects ----------------------------------
+        // Runs every launch (not just first run) so it reaches an existing DB.
+        BuiltInApps.sync();
         // -- placeholder scene (Drop 1) --------------------------------------
         // Drop 2 replaces this with LauncherView.
         // -- main scene (Drop 2) ---------------------------------------------

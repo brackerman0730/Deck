@@ -30,7 +30,8 @@ public final class Migrations {
 
     /** Migration files that ship with the app, in numeric order. */
     private static final String[] FILES = {
-            "V1__initial_schema.sql"
+            "V1__initial_schema.sql",
+            "V2__composite_columns.sql"
     };
 
     private Migrations() { }

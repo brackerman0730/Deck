@@ -10,11 +10,15 @@ package com.deck.model;
  *   <li>{@link #SCRIPT} — {@code .bat} / {@code .cmd} / {@code .ps1} run via
  *       {@code ProcessBuilder} (PowerShell scripts get a {@code powershell -File}
  *       wrapper)</li>
+ *   <li>{@link #COMPOSITE} — runs a background startup command, waits a fixed
+ *       delay, then opens a URL. For apps that need a local server warmed up
+ *       first (e.g. start Node, wait, browse to {@code localhost:3000}).</li>
  * </ul>
  */
 public enum LaunchType {
     URL,
     EXE,
     JAR,
-    SCRIPT
+    SCRIPT,
+    COMPOSITE
 }

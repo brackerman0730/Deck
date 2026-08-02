@@ -51,19 +51,17 @@ public final class SeedData {
     }
 
     private static void insertSamples() throws SQLException {
-        Dao.insertApp(new AppEntry(
-                -1, "Trackoff", LaunchType.JAR,
-                "C:\\Users\\ackermanb2\\Desktop\\Personal Projects\\Trackoff\\out\\trackoff.jar",
-                null, null, null, 0));
-
-        Dao.insertApp(new AppEntry(
+        // Tiles for the sibling projects (Trackoff, GPA Calculator, RegiQuiz)
+        // are not seeded here — BuiltInApps owns them, because it runs on every
+        // startup and can therefore reach a database that already exists.
+        Dao.insertApp(AppEntry.simple(
                 -1, "Google Doc Planner", LaunchType.URL,
                 "https://docs.google.com/",
-                null, null, null, 1));
+                null, null, null, 0));
 
-        Dao.insertApp(new AppEntry(
+        Dao.insertApp(AppEntry.simple(
                 -1, "Wordle", LaunchType.URL,
                 "https://www.nytimes.com/games/wordle/",
-                null, null, null, 2));
+                null, null, null, 1));
     }
 }
